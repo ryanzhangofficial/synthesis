@@ -5,7 +5,7 @@ import Label from "@/ui/components/Label"
 import Panel, { PanelPropsImpl } from "@/ui/components/Panel"
 import SelectMenu, { SelectMenuOption } from "@/ui/components/SelectMenu"
 import { ToggleButton, ToggleButtonGroup } from "@/ui/components/ToggleButtonGroup"
-import { MouseEvent, useEffect, useMemo, useReducer, useState } from "react"
+import { useEffect, useMemo, useReducer, useState, MouseEvent } from "react"
 import ConfigureScoringZonesInterface from "./interfaces/scoring/ConfigureScoringZonesInterface"
 import ChangeInputsInterface from "./interfaces/inputs/ConfigureInputsInterface"
 import InputSystem from "@/systems/input/InputSystem"
@@ -24,7 +24,6 @@ import TransformGizmoControl from "@/ui/components/TransformGizmoControl"
 import { ConfigMode, popConfigurePanelSettings } from "./ConfigurePanelControls"
 import BrainSelectionInterface from "./interfaces/BrainSelectionInterface"
 import SimulationInterface from "./interfaces/SimulationInterface"
-import { mirabufPanelState } from "@/panels/mirabuf/MirabufState.tsx"
 
 /** Option for selecting a robot of field */
 class AssemblySelectionOption extends SelectMenuOption {
@@ -40,6 +39,8 @@ interface ConfigurationSelectionProps {
     configurationType: ConfigurationType
     onAssemblySelected: (assembly: MirabufSceneObject | undefined) => void
     selectedAssembly?: MirabufSceneObject
+    onStageDelete: (opt: SelectMenuOption) => void
+    pendingDeletes: number[]
 }
 
 function makeSelectionOption(configurationType: ConfigurationType, assembly: MirabufSceneObject) {
@@ -53,57 +54,43 @@ const AssemblySelection: React.FC<ConfigurationSelectionProps> = ({
     configurationType,
     onAssemblySelected,
     selectedAssembly,
+    onStageDelete,
+    pendingDeletes,
 }) => {
     // Update is used when a robot or field is deleted to update the select menu
     const [u, update] = useReducer(x => !x, false)
     const { openPanel } = usePanelControlContext()
 
     const robots = useMemo(() => {
-        const assemblies = [...World.SceneRenderer.sceneObjects.values()].filter(x => {
-            if (x instanceof MirabufSceneObject) {
-                return x.miraType === MiraType.ROBOT
-            }
-            return false
-        }) as MirabufSceneObject[]
-
-        return assemblies
-        // eslint-disable-next-line react-hooks/exhaustive-deps
-    }, [u])
+        return [...World.SceneRenderer.sceneObjects.values()]
+            .filter(x => x instanceof MirabufSceneObject && x.miraType === MiraType.ROBOT)
+            .filter(x => !pendingDeletes.includes(x.id))
+    }, [u, pendingDeletes])
 
     const fields = useMemo(() => {
-        const assemblies = [...World.SceneRenderer.sceneObjects.values()].filter(x => {
-            if (x instanceof MirabufSceneObject) {
-                return x.miraType === MiraType.FIELD
-            }
-            return false
-        }) as MirabufSceneObject[]
-
-        return assemblies
-        // eslint-disable-next-line react-hooks/exhaustive-deps
-    }, [u])
+        return [...World.SceneRenderer.sceneObjects.values()]
+            .filter(x => x instanceof MirabufSceneObject && x.miraType === MiraType.FIELD)
+            .filter(x => !pendingDeletes.includes(x.id))
+    }, [u, pendingDeletes])
 
     const options = useMemo(() => {
-        return (configurationType == ConfigurationType.ROBOT ? robots : fields).map(assembly =>
-            makeSelectionOption(configurationType, assembly)
-        )
-    }, [configurationType, fields, robots])
+        const list = configurationType == ConfigurationType.ROBOT ? robots : fields
+        return list
+            .filter((assembly): assembly is MirabufSceneObject => assembly != null)
+            .map(assembly => makeSelectionOption(configurationType, assembly))
+    }, [configurationType, robots, fields])
 
     /** Robot or field select menu */
     return (
         <SelectMenu
             options={options}
-            onOptionSelected={val => {
-                onAssemblySelected((val as AssemblySelectionOption)?.assemblyObject)
-            }}
+            onOptionSelected={val => onAssemblySelected((val as AssemblySelectionOption)?.assemblyObject)}
             defaultHeaderText={`Select a ${configurationType == ConfigurationType.ROBOT ? "Robot" : "Field"}`}
             onDelete={val => {
-                World.SceneRenderer.RemoveSceneObject((val as AssemblySelectionOption).assemblyObject.id)
-                // onAssemblySelected(undefined)
+                onStageDelete(val)
                 update()
             }}
             onAddClicked={() => {
-                mirabufPanelState.currentMode =
-                    configurationType == ConfigurationType.FIELD ? MiraType.FIELD : MiraType.ROBOT
                 openPanel("import-mirabuf")
             }}
             noOptionsText={`No ${configurationType == ConfigurationType.ROBOT ? "robots" : "fields"} spawned!`}
@@ -317,6 +304,7 @@ const ConfigurePanel: React.FC<PanelPropsImpl> = ({ panelId }) => {
     const [configurationType, setConfigurationType] = useState<ConfigurationType>(getConfigurationType())
     const [selectedAssembly, setSelectedAssembly] = useState<MirabufSceneObject | undefined>(undefined)
     const [configMode, setConfigMode] = useState<ConfigMode | undefined>(undefined)
+    const [pendingDeletes, setPendingDeletes] = useState<number[]>([])
 
     useEffect(() => {
         const settings = popConfigurePanelSettings()
@@ -338,9 +326,9 @@ const ConfigurePanel: React.FC<PanelPropsImpl> = ({ panelId }) => {
             cancelEnabled={true}
             openLocation="right"
             onAccept={() => {
-                // Save the current panel state
+                pendingDeletes.forEach(id => World.SceneRenderer.RemoveSceneObject(id))
+                setPendingDeletes([])
                 setSelectedConfigurationType(configurationType)
-
                 new ConfigurationSavedEvent()
             }}
             acceptName="Save"
@@ -383,6 +371,11 @@ const ConfigurePanel: React.FC<PanelPropsImpl> = ({ panelId }) => {
                                 setSelectedAssembly(a)
                             }}
                             selectedAssembly={selectedAssembly}
+                            onStageDelete={opt => {
+                                const id = (opt as AssemblySelectionOption).assemblyObject.id
+                                setPendingDeletes(prev => [...prev, id])
+                            }}
+                            pendingDeletes={pendingDeletes}
                         />
                         {/** Nested select menu to pick a configuration mode */}
                         {selectedAssembly != undefined && (
